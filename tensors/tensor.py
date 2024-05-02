@@ -1,3 +1,4 @@
+import math
 from typing import Tuple, Union, List, Generator, Iterator
 
 
@@ -82,7 +83,7 @@ class Tensor:
 
         :return: A tuple representing the dimensions of the nested list
         '''
-        if isinstance(data, int):
+        if isinstance(data, (int, float)):
             return ()  # Base case: for a single integer, return an empty tuple
         else:
             return (len(data),) + self._find_dimensions(data[0])  # Recursively find dimensions of sub-lists
@@ -99,7 +100,7 @@ class Tensor:
         check_data = self._initialize_data(dimensions)
 
         def rec(t1, t2):
-            if isinstance(t1, int) or isinstance(t2, int):
+            if isinstance(t1, (int, float)) or isinstance(t2, (int, float)):
                 return 0
         
             current1 = t1
@@ -150,11 +151,8 @@ class Tensor:
 
         :return: A generator yielding elements of type dtype
         '''
-        if isinstance(data, list):
-            for sub_data in data:
-                yield sub_data
-        else:
-            yield data
+        for i in range(self.dimensions[0]):
+            yield self[i]
     
     def shape(self, index: int=None) -> Union[int, Tuple[int]]:
         '''
@@ -203,15 +201,29 @@ class Tensor:
         :return: The tesnor at the specified indices
         '''
         if isinstance(indices, tuple):
-            return Tensor(
+            res_obj = Tensor(
                 data=self._get_value(*indices),
                 required_grad=self.required_grad
             )
+
+            res_obj.grad = self.grad(*indices)
+            # return Tensor(
+            #     data=self._get_value(*indices),
+            #     required_grad=self.required_grad
+            # )
         else:
-            return Tensor(
+            res_obj = Tensor(
                 data=self._get_value(indices),
                 required_grad=self.required_grad
             )
+
+            res_obj.grad = self.grad[indices]
+            # return Tensor(
+            #     data=self._get_value(indices),
+            #     required_grad=self.required_grad
+            # )
+
+        return res_obj
 
     def __setitem__(self, indices: Union[int, Tuple[int]], value: dtype) -> None:
         '''
@@ -232,3 +244,380 @@ class Tensor:
         :return: An iterator yielding elements of type dtype
         '''
         yield from self._iterate_data(self.data)
+
+    def __add__(self, sec_obj: 'Tensor') -> 'Tensor':
+        '''
+        Overloaded method to perform element-wise addition of two tensors.
+
+        :param sec_obj: The second tensor to add
+
+        :return: The result tensor after addition
+        '''
+        if self.shape() != sec_obj.shape():
+            raise ValueError("Tensor dimensions don't match for addition.")
+
+        def add_tensors(t1, t2):
+            if isinstance(t1, list) and isinstance(t2, list):
+                return [add_tensors(sub_t1, sub_t2) for sub_t1, sub_t2 in zip(t1, t2)]
+            else:
+                return t1 + t2
+            
+        if self.required_grad:
+            res_obj = Tensor(
+                data=add_tensors(self.data, sec_obj.data),
+                _children=(self, sec_obj),
+                _op='+'
+            )
+        else:
+            res_obj = Tensor(
+                data=add_tensors(self.data, sec_obj.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t1, t2, res_t):
+                if isinstance(t1.data, (int, float)) and isinstance(t2.data, (int, float)):
+                    return
+
+                if isinstance(t1.data, list) and isinstance(t2.data, list):
+                    for sub_t1, sub_t2, sub_res_t in zip(t1, t2, res_t):
+                        update_gradients(sub_t1, sub_t2, sub_res_t)
+
+                if not isinstance(t1.data[0], list) and not isinstance(t1.data[0], list):
+                    for i in range(len(t1.data)):
+                        t1.grad[i] += res_t.grad[i]
+                        t2.grad[i] += res_t.grad[i]
+
+            update_gradients(self, sec_obj, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+
+    def __neg__(self) -> 'Tensor':
+        '''
+        Implement the -self operation with the tensor
+
+        :return: The result of the negation
+        '''
+        def negeate_tensor(t):
+            if isinstance(t, list):
+                return [negeate_tensor(sub_t) for sub_t in t]
+            else:
+                return -t
+        
+        if self.required_grad:
+            res_obj = Tensor(
+                data=negeate_tensor(self.data),
+                _children=(self,),
+                _op='-'
+            )
+        else:
+            res_obj = Tensor(
+                data=negeate_tensor(self.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t, res_t):
+                if isinstance(t.data, int):
+                    return
+
+                if isinstance(t.data, list):
+                    for sub_t, sub_res_t in zip(t, res_t):
+                        update_gradients(sub_t, sub_res_t)
+
+                if not isinstance(t.data[0], list):
+                    for i in range(len(t.data)):
+                        t.grad[i] += -1 * res_t.grad[i]
+
+            update_gradients(self, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+
+    def __sub__(self, sec_obj: 'Tensor') -> 'Tensor':
+        '''
+        Implement the __sub__ method for tensor
+
+        :param sec_obj: The second operand of the subtraction
+
+        :return: The result opf the subtraction
+        '''
+        return self + (-sec_obj)
+    
+    def __mul__(self, sec_obj: 'Tensor') -> 'Tensor':
+        '''
+        Implement the multiplication operator between two tensors
+
+        :param sec_obj: The second operand of the multiplication
+
+        :return: The result of the multiplication
+        '''
+        if self.shape() != sec_obj.shape():
+            raise ValueError("Tensor dimensions don't match for addition.")
+
+        def mul_tensors(t1, t2):
+            if isinstance(t1, list) and isinstance(t2, list):
+                return [mul_tensors(sub_t1, sub_t2) for sub_t1, sub_t2 in zip(t1, t2)]
+            else:
+                return t1 * t2
+            
+        if self.required_grad:
+            res_obj = Tensor(
+                data=mul_tensors(self.data, sec_obj.data),
+                _children=(self, sec_obj),
+                _op='*'
+            )
+        else:
+            res_obj = Tensor(
+                data=mul_tensors(self.data, sec_obj.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t1, t2, res_t):
+                if isinstance(t1.data, (int, float)) and isinstance(t2.data, (int, float)):
+                    return
+
+                if isinstance(t1.data, list) and isinstance(t2.data, list):
+                    for sub_t1, sub_t2, sub_res_t in zip(t1, t2, res_t):
+                        update_gradients(sub_t1, sub_t2, sub_res_t)
+
+                if not isinstance(t1.data[0], list) and not isinstance(t1.data[0], list):
+                    for i in range(len(t1.data)):
+                        t1.grad[i] += t2.data[i] * res_t.grad[i]
+                        t2.grad[i] += t1.data[i] * res_t.grad[i]
+
+            update_gradients(self, sec_obj, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+
+    def __pow__(self, exp: Union[int, float]) -> 'Tensor':
+        '''
+        Implement the self**exp operator for the Tensor
+
+        :parap exp: The exponent of the power operation
+
+        :return: The result of the power operation
+        '''
+        def pow_tensor(t):
+            if isinstance(t, list):
+                return [pow_tensor(sub_t) for sub_t in t]
+            else:
+                return t**exp
+        
+        if self.required_grad:
+            res_obj = Tensor(
+                data=pow_tensor(self.data),
+                _children=(self,),
+                _op='**'
+            )
+        else:
+            res_obj = Tensor(
+                data=pow_tensor(self.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t, res_t):
+                if isinstance(t.data, (int, float)):
+                    return
+
+                if isinstance(t.data, list):
+                    for sub_t, sub_res_t in zip(t, res_t):
+                        update_gradients(sub_t, sub_res_t)
+
+                if not isinstance(t.data[0], list):
+                    for i in range(len(t.data)):
+                        t.grad[i] += exp*(t.data[i]**(exp-1)) * res_t.grad[i]
+
+            update_gradients(self, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+    
+    def __truediv__(self, sec_obj: 'Tensor') -> 'Tensor':
+        '''
+        Implement the division operation between two tensors
+
+        :param sec_obj: The second operand of the division
+
+        :return: The result of the devision
+        '''
+        return self * (sec_obj ** -1)
+
+    def exp(self) -> 'Tensor':
+        '''
+        Implement the e^X operation for the tensors
+
+        :return: The result of the e^X function
+        '''
+        def exp_tensor(t):
+            if isinstance(t, list):
+                return [exp_tensor(sub_t) for sub_t in t]
+            else:
+                return math.exp(t)
+        
+        if self.required_grad:
+            res_obj = Tensor(
+                data=exp_tensor(self.data),
+                _children=(self,),
+                _op='**'
+            )
+        else:
+            res_obj = Tensor(
+                data=exp_tensor(self.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t, res_t):
+                if isinstance(t.data, (int, float)):
+                    return
+
+                if isinstance(t.data, list):
+                    for sub_t, sub_res_t in zip(t, res_t):
+                        update_gradients(sub_t, sub_res_t)
+
+                if not isinstance(t.data[0], list):
+                    for i in range(len(t.data)):
+                        t.grad[i] += t.data[i] * res_t.grad[i]
+
+            update_gradients(self, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+    
+    def tanh(self) -> 'Tensor':
+        '''
+        Implement the tanh function for Lists
+
+        :return: The result of the tanh function
+        '''
+        def tanh_tensor(t):
+            if isinstance(t, list):
+                return [tanh_tensor(sub_t) for sub_t in t]
+            else:
+                return (math.exp(2 * t) - 1) / (math.exp(2 * t) + 1)
+        
+        if self.required_grad:
+            res_obj = Tensor(
+                data=tanh_tensor(self.data),
+                _children=(self,),
+                _op='**'
+            )
+        else:
+            res_obj = Tensor(
+                data=tanh_tensor(self.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t, res_t):
+                if isinstance(t.data, (int, float)):
+                    return
+
+                if isinstance(t.data, list):
+                    for sub_t, sub_res_t in zip(t, res_t):
+                        update_gradients(sub_t, sub_res_t)
+
+                if not isinstance(t.data[0], list):
+                    for i in range(len(t.data)):
+                        t.grad[i] += (1- res_t.data[i]**2) * res_t.grad[i]
+
+            update_gradients(self, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+
+    def relu(self) -> 'Tensor':
+        '''
+        Implement the ReLU function for Lists
+
+        :return: The result of the ReLU function
+        '''
+        def relu_tensor(t):
+            if isinstance(t, list):
+                return [relu_tensor(sub_t) for sub_t in t]
+            else:
+                return t if t > 0 else 0
+        
+        if self.required_grad:
+            res_obj = Tensor(
+                data=relu_tensor(self.data),
+                _children=(self,),
+                _op='**'
+            )
+        else:
+            res_obj = Tensor(
+                data=relu_tensor(self.data)
+            )
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            def update_gradients(t, res_t):
+                if isinstance(t.data, (int, float)):
+                    return
+
+                if isinstance(t.data, list):
+                    for sub_t, sub_res_t in zip(t, res_t):
+                        update_gradients(sub_t, sub_res_t)
+
+                if not isinstance(t.data[0], list):
+                    for i in range(len(t.data)):
+                        t.grad[i] += (t.data[i] > 0) * res_t.grad[i]
+
+            update_gradients(self, res_obj)
+            
+        res_obj._backward = _backward
+
+        return res_obj
+
+    def backward(self) -> None:
+        '''
+        Implement backpropagation for the tensor class
+        '''
+        topo = []
+        visited = set()
+        def _build_topo(v) -> None:
+            '''
+            Apply topological sorting to the children of a tensor
+
+            :param v: The object that we want to apply topological sorting
+            the its children
+            '''
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    _build_topo(child)
+                topo.append(v)
+
+        _build_topo(self)
+
+        # Set the initial grad
+        self.grad = self._initialize_data(self.dimensions, 1.0)
+
+        # Apply topological sorted to compute the _backward method of every children
+        for n in reversed(topo):
+            n._backward()
