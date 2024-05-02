@@ -150,11 +150,6 @@ class Tensor:
 
         :return: A generator yielding elements of type dtype
         '''
-        # if isinstance(data, list):
-        #     for sub_data in data:
-        #         yield from self._iterate_data(sub_data)
-        # else:
-        #     yield data
         if isinstance(data, list):
             for sub_data in data:
                 yield sub_data
