@@ -1,2 +1,2 @@
 # lightning-nets
-This repository houses a comprehensive collection of tensor operations and neural network modules built from scratch, designed to 
+This repository serves as a comprehensive collection of custom-built tensors and modules for neural networks developed entirely from scratch using Python.
