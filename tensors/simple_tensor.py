@@ -96,7 +96,7 @@ class SimpleTensor:
             Updating the gradients of the children Lists 
             '''
             for i in range(len(self.data)):
-                self.grad[i] *= -1
+                self.grad[i] += -1 * res_obj.grad[i]
         
         res_obj._backward = _backward
 
@@ -192,7 +192,7 @@ class SimpleTensor:
             Updating the gradients of the children Lists 
             '''
             for i in range(len(self.data)):
-                self.grad[i] += res_obj.data[i] + res_obj.grad[i]
+                self.grad[i] += res_obj.data[i] * res_obj.grad[i]
         
         res_obj._backward = _backward
 
