@@ -1,4 +1,6 @@
 import math
+from functools import reduce
+from operator import mul
 from typing import Tuple, Union, List, Generator, Iterator
 
 
@@ -153,6 +155,49 @@ class Tensor:
         '''
         for i in range(self.dimensions[0]):
             yield self[i]
+
+    @staticmethod
+    def _flatten(data: NestedList) -> List[dtype]:
+        '''
+        Convert the multidimensional tensor's elements into an 1d list
+
+        :param data: The elements of the multidimensional tensor
+
+        :return: The 1d list
+        '''
+        def _flatten_rec(data: NestedList) -> Generator[dtype, None, None]:
+            for item in data:
+                if isinstance(item, list):
+                    yield from _flatten_rec(item)
+                else:
+                    yield item
+
+        flattened_data = list(_flatten_rec(data))  # Convert generator to list
+
+        return flattened_data
+
+    @staticmethod
+    def _reshape_flatten(data: NestedList, new_dims: Tuple[int]) -> NestedList:
+        '''
+        Change flatten's tensors dimensions
+
+        :param data: The elements of the flattened tensor
+        :param new_dims: The dimensions the flatten tensor is going to have
+
+        :return: The multidimensional tensor's elements
+        '''
+        j = 0
+        def _reshape(data: NestedList, new_dimensions: Tuple[int]) -> NestedList:
+            nonlocal j
+
+            if len(new_dimensions) == 0:
+                ret = data[j]
+                j += 1
+                return ret
+            else:
+                return [_reshape(data, new_dimensions[1:]) for _ in range(new_dimensions[0])]
+
+        return _reshape(data, new_dims)
     
     def shape(self, index: int=None) -> Union[int, Tuple[int]]:
         '''
@@ -227,23 +272,13 @@ class Tensor:
                 data=self._get_value(*indices),
                 required_grad=self.required_grad
             )
-
             res_obj.grad = self.grad(*indices)
-            # return Tensor(
-            #     data=self._get_value(*indices),
-            #     required_grad=self.required_grad
-            # )
         else:
             res_obj = Tensor(
                 data=self._get_value(indices),
                 required_grad=self.required_grad
             )
-
             res_obj.grad = self.grad[indices]
-            # return Tensor(
-            #     data=self._get_value(indices),
-            #     required_grad=self.required_grad
-            # )
 
         return res_obj
 
@@ -275,45 +310,66 @@ class Tensor:
 
         :return: The result tensor after addition
         '''
-        if self.shape() != sec_obj.shape():
-            raise ValueError("Tensor dimensions don't match for addition.")
+        assert self.dimensions[-1] == sec_obj.dimensions[-1], f'Tensor dimensions don\'t match for addition: {self.shape()}, and {sec_obj.shape()}'
 
-        def add_tensors(t1, t2):
-            if isinstance(t1, list) and isinstance(t2, list):
-                return [add_tensors(sub_t1, sub_t2) for sub_t1, sub_t2 in zip(t1, t2)]
+        add_on_last = False
+        def _produce_res() -> Tensor:
+            '''
+            The function that will return the result of the addition
+            '''
+            nonlocal add_on_last
+            # Flattening the tensors' elements
+            flatten_self_data = Tensor._flatten(self.data)
+            flatten_sec_data = Tensor._flatten(sec_obj.data)
+
+            if (reduce(mul, sec_obj.dimensions, 1) == sec_obj.dimensions[-1]) and (len(flatten_self_data) != len(flatten_sec_data)):
+                # extending the small tensor: for adding on the last dimension
+                add_on_last = True
+                flatten_sec_data = flatten_sec_data * self.dimensions[-1]
+
+            if len(flatten_self_data) != len(flatten_sec_data):
+                raise ValueError(f'Tensors cannot be added together with dimensions {self.dimensions}, and {sec_obj.dimensions}')
+
+            if self.required_grad:
+                return Tensor(
+                    data=Tensor._reshape_flatten([el_1 + el_2 for el_1, el_2 in zip(flatten_self_data, flatten_sec_data)], self.dimensions),
+                    required_grad=True,
+                    _children=(self, sec_obj),
+                    _op='+'
+                )
             else:
-                return t1 + t2
-            
-        if self.required_grad:
-            res_obj = Tensor(
-                data=add_tensors(self.data, sec_obj.data),
-                _children=(self, sec_obj),
-                _op='+'
-            )
-        else:
-            res_obj = Tensor(
-                data=add_tensors(self.data, sec_obj.data)
-            )
+                return Tensor(
+                    data=Tensor._reshape_flatten([el_1 + el_2 for el_1, el_2 in zip(flatten_self_data, flatten_sec_data)], self.dimensions),
+                    required_grad=False
+                )
+        
+        res_obj = _produce_res()
 
         def _backward() -> None:
             '''
             Updating the gradients of the children Tensors for addition operation
             '''
-            def update_gradients(t1, t2, res_t):
-                if isinstance(t1.data, (int, float)) and isinstance(t2.data, (int, float)):
-                    return
+            nonlocal add_on_last
 
-                if isinstance(t1.data, list) and isinstance(t2.data, list):
-                    for sub_t1, sub_t2, sub_res_t in zip(t1, t2, res_t):
-                        update_gradients(sub_t1, sub_t2, sub_res_t)
+            flatten_self_grad = Tensor._flatten(self.grad)
+            flatten_sec_grad = Tensor._flatten(sec_obj.grad)
+            flatten_res_grad = Tensor._flatten(res_obj.grad)
 
-                if not isinstance(t1.data[0], list) and not isinstance(t1.data[0], list):
-                    for i in range(len(t1.data)):
-                        t1.grad[i] += res_t.grad[i]
-                        t2.grad[i] += res_t.grad[i]
+            if add_on_last:
+                flatten_sec_grad = flatten_sec_grad * self.dimensions[-1]
 
-            update_gradients(self, sec_obj, res_obj)
-            
+            for i in range(len(flatten_self_grad)):
+                flatten_self_grad[i] += flatten_res_grad[i]
+                if i >= self.dimensions[-1] and add_on_last:
+                    continue
+                flatten_sec_grad[i] += flatten_res_grad[i]
+
+            self.grad = Tensor._reshape_flatten(flatten_self_grad, self.dimensions)
+            if add_on_last:
+                sec_obj.grad = Tensor._reshape_flatten(flatten_sec_grad[:self.dimensions[-1]], sec_obj.dimensions)
+            else:
+                sec_obj.grad = Tensor._reshape_flatten(flatten_sec_grad, sec_obj.dimensions)
+
         res_obj._backward = _backward
 
         return res_obj
@@ -333,12 +389,14 @@ class Tensor:
         if self.required_grad:
             res_obj = Tensor(
                 data=negeate_tensor(self.data),
+                required_grad=True,
                 _children=(self,),
                 _op='-'
             )
         else:
             res_obj = Tensor(
-                data=negeate_tensor(self.data)
+                data=negeate_tensor(self.data),
+                required_grad=False,
             )
 
         def _backward() -> None:
@@ -358,7 +416,7 @@ class Tensor:
                         t.grad[i] += -1 * res_t.grad[i]
 
             update_gradients(self, res_obj)
-            
+
         res_obj._backward = _backward
 
         return res_obj
@@ -381,45 +439,71 @@ class Tensor:
 
         :return: The result of the multiplication
         '''
-        if self.shape() != sec_obj.shape():
-            raise ValueError("Tensor dimensions don't match for addition.")
+        assert self.dimensions[-1] == sec_obj.dimensions[-1], f'Tensor dimensions don\'t match for multiplication: {self.shape()}, and {sec_obj.shape()}'
 
-        def mul_tensors(t1, t2):
-            if isinstance(t1, list) and isinstance(t2, list):
-                return [mul_tensors(sub_t1, sub_t2) for sub_t1, sub_t2 in zip(t1, t2)]
+        mul_on_last = False
+        flatten_self_data: Tensor
+        flatten_sec_data: Tensor
+        def _produce_res() -> Tensor:
+            '''
+            The function that will return the result of the addition
+            '''
+            nonlocal mul_on_last
+            nonlocal flatten_self_data
+            nonlocal flatten_sec_data
+            # Flattening the tensors' elements
+            flatten_self_data = Tensor._flatten(self.data)
+            flatten_sec_data = Tensor._flatten(sec_obj.data)
+
+            # the first if: shape of (1, 1, ..., 1, n) | second: the two arrays don't have the same number of elements
+            if (reduce(mul, sec_obj.dimensions, 1) == sec_obj.dimensions[-1]) and (len(flatten_self_data) != len(flatten_sec_data)):
+                # extending the small tensor: for adding on the last dimension
+                mul_on_last = True
+                flatten_sec_data = flatten_sec_data * self.dimensions[-1]
+
+            if len(flatten_self_data) != len(flatten_sec_data):
+                raise ValueError(f'Tensors cannot be added together with dimensions {self.dimensions}, and {sec_obj.dimensions}')
+
+            if self.required_grad:
+                return Tensor(
+                    data=Tensor._reshape_flatten([el_1 * el_2 for el_1, el_2 in zip(flatten_self_data, flatten_sec_data)], self.dimensions),
+                    required_grad=True,
+                    _children=(self, sec_obj),
+                    _op='+'
+                )
             else:
-                return t1 * t2
-            
-        if self.required_grad:
-            res_obj = Tensor(
-                data=mul_tensors(self.data, sec_obj.data),
-                _children=(self, sec_obj),
-                _op='*'
-            )
-        else:
-            res_obj = Tensor(
-                data=mul_tensors(self.data, sec_obj.data)
-            )
+                return Tensor(
+                    data=Tensor._reshape_flatten([el_1 * el_2 for el_1, el_2 in zip(flatten_self_data, flatten_sec_data)], self.dimensions),
+                    required_grad=False
+                )
+        
+        res_obj = _produce_res()
 
         def _backward() -> None:
             '''
             Updating the gradients of the children Tensors for addition operation
             '''
-            def update_gradients(t1, t2, res_t):
-                if isinstance(t1.data, (int, float)) and isinstance(t2.data, (int, float)):
-                    return
+            nonlocal mul_on_last
 
-                if isinstance(t1.data, list) and isinstance(t2.data, list):
-                    for sub_t1, sub_t2, sub_res_t in zip(t1, t2, res_t):
-                        update_gradients(sub_t1, sub_t2, sub_res_t)
+            flatten_self_grad = Tensor._flatten(self.grad)
+            flatten_sec_grad = Tensor._flatten(sec_obj.grad)
+            flatten_res_grad = Tensor._flatten(res_obj.grad)
 
-                if not isinstance(t1.data[0], list) and not isinstance(t1.data[0], list):
-                    for i in range(len(t1.data)):
-                        t1.grad[i] += t2.data[i] * res_t.grad[i]
-                        t2.grad[i] += t1.data[i] * res_t.grad[i]
+            if mul_on_last:
+                flatten_sec_grad = flatten_sec_grad * self.dimensions[-1]
 
-            update_gradients(self, sec_obj, res_obj)
-            
+            for i in range(len(flatten_self_grad)):
+                flatten_self_grad[i] += flatten_sec_data[i] * flatten_res_grad[i]
+                if i >= self.dimensions[-1] and mul_on_last:
+                    continue
+                flatten_sec_grad[i] += flatten_sec_data[i] * flatten_res_grad[i]
+
+            self.grad = Tensor._reshape_flatten(flatten_self_grad, self.dimensions)
+            if mul_on_last:
+                sec_obj.grad = Tensor._reshape_flatten(flatten_sec_grad[:self.dimensions[-1]], sec_obj.dimensions)
+            else:
+                sec_obj.grad = Tensor._reshape_flatten(flatten_sec_grad, sec_obj.dimensions)
+
         res_obj._backward = _backward
 
         return res_obj
