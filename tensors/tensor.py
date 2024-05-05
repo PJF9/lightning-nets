@@ -198,6 +198,12 @@ class Tensor:
             return f'Tensor({str(self.data)}, required_grad=True)'
         return f'Tensor({str(self.data)}, required_grad=False)'
     
+    def __repr__(self) -> str:
+        '''
+        Convert the tensor to string
+        '''
+        return str(self)
+    
     def __len__(self) -> int:
         '''
         Return the length of the first dimension of the tensor
