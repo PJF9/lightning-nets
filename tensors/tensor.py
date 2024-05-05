@@ -183,7 +183,13 @@ class Tensor:
         if len(self.dimensions) == 0:
             return self.data
         raise ValueError(f'The given tensor is not a scalar, it has dimensions of {self.dimensions}')
-    
+
+    def zero_grad(self) -> None:
+        '''
+        Reset the gradient of the tensor
+        '''
+        self.grad = self._initialize_data(self.dimensions)
+
     def __str__(self) -> str:
         '''
         Convert the tensor to string
@@ -191,6 +197,16 @@ class Tensor:
         if self.required_grad:
             return f'Tensor({str(self.data)}, required_grad=True)'
         return f'Tensor({str(self.data)}, required_grad=False)'
+    
+    def __len__(self) -> int:
+        '''
+        Return the length of the first dimension of the tensor
+
+        :return: The length of the tensor
+        '''
+        if isinstance(self.data, list):
+            return len(self.data)
+        return 0
 
     def __getitem__(self, indices: Union[int, Tuple[int]]) -> 'Tensor':
         '''
