@@ -235,6 +235,143 @@ class Tensor:
         '''
         self.grad = self._initialize_data(self.dimensions)
 
+    def T(self) -> 'Tensor':
+        '''
+        Perform the transpose operator to the tensor
+
+        :return: The resulting tensor
+        '''
+        flatten_t = Tensor._flatten(self.data)
+        l = []
+
+        # Change the order of the flatten tensor to transpose the last two dimensions
+        j = 0
+        while (j < len(flatten_t) // self.dimensions[-2]):
+            for i in range(j, len(flatten_t), self.dimensions[-1]):
+                l.append(flatten_t[i])
+            j += 1
+
+        return Tensor(
+            data=Tensor._reshape_flatten(l, self.dimensions[:-2] + (self.dimensions[-1],) + (self.dimensions[-2],)),
+            required_grad=False
+        )
+
+    def dot(self, sec_obj: 'Tensor', transpose: bool=True) -> 'Tensor':
+        '''
+        The function that return the dot product between two tensors
+
+        :param sec_obj: The second operant
+
+        :return: The result of the dot product
+        '''
+        assert self.dimensions[-1] == sec_obj.dimensions[-2], f'Tensor dimensions don\'t mach: {self.dimensions}, and {sec_obj.dimensions}'
+        if len(self.dimensions) > 1:
+            assert len(self.dimensions) == len(sec_obj.dimensions), f'Tensors need to be in the same space, got {len(self.dimensions)}, and {len(sec_obj.dimensions)}'
+
+        flatten_self_data: NestedList
+        flatten_sec_data: NestedList
+        def _produce_res() -> Tensor:
+            '''
+            The function that will return the result of the addition
+            '''
+            nonlocal flatten_self_data
+            nonlocal flatten_sec_data
+
+            # Flattening the tensors' elements
+            flatten_self_data = Tensor._flatten(self.data)
+            if transpose:
+                flatten_sec_data = Tensor._flatten(sec_obj.T().data)
+            else:
+                flatten_sec_data = Tensor._flatten(sec_obj.data)
+
+            res = []
+            prev_i = 0
+            for i in range(self.dimensions[-1], len(flatten_self_data)+1, self.dimensions[-1]):
+                prev_j = 0
+                for j in range(sec_obj.dimensions[-2], len(flatten_sec_data)+1, sec_obj.dimensions[-2]):
+                    res.append(sum([flatten_self_data[prev_i:i][k]*flatten_sec_data[prev_j:j][k] for k in range(self.dimensions[-1])]))
+                    prev_j = j
+                prev_i = i
+
+            res = Tensor._reshape_flatten(
+                data=res,
+                new_dims=(self.dimensions[:-1] + (sec_obj.dimensions[-1],))
+            )
+
+            if self.required_grad:
+                return Tensor(
+                    data=res,
+                    required_grad=True,
+                    _children=(self, sec_obj),
+                    _op='*',
+                )
+            else:
+                return Tensor(
+                    data=res,
+                    required_grad=False,
+                    _op='*',
+                )
+
+        res_obj = _produce_res()
+
+        print(res_obj)
+
+        def _backward() -> None:
+            '''
+            Updating the gradients of the children Tensors for addition operation
+            '''
+            flatten_self_grad = Tensor._flatten(self.grad)
+            flatten_sec_grad = Tensor._flatten(sec_obj.grad)
+            flatten_res_grad = Tensor._flatten(res_obj.grad)
+            flatten_sec_data_T = Tensor._flatten(sec_obj.data) # for the gradients I need to original sec_data not the transposed
+
+            print(flatten_self_grad)
+            print(flatten_sec_grad)
+
+            if len(self.dimensions) == 1:
+                virtual_dims = (1, self.dimensions[0])
+            else:
+                virtual_dims = self.dimensions
+
+            # j = 0
+            # for i in range(len(flatten_self_grad)):
+            #     flatten_self_grad[i] += sum([flatten_sec_data_T[k+j] * flatten_res_grad[k] for k in range(sec_obj.dimensions[-1])])
+            #     j = (i+1) * sec_obj.dimensions[-1]
+
+            # Update the gradients of the self tensor
+            k = 0
+            p = 0
+            for i in range(len(flatten_self_grad)):
+                if i % virtual_dims[-1] == 0 and i != 0:
+                    k = 0
+                    p = (p + 1) * sec_obj.dimensions[-1]
+
+                flatten_self_grad[i] += sum(flatten_sec_data_T[j+k]*flatten_res_grad[j+p] for j in range(sec_obj.dimensions[-1]))
+                k = (i + 1) * sec_obj.dimensions[-1]
+
+            # Upadate the gradients of the sec tensor
+            k = 0
+            p = 0
+            for i in range(len(flatten_sec_grad)):
+                p = i
+                if i % sec_obj.dimensions[-1]:
+                    k += 1
+                    p = 1
+                # flatten_sec_grad[i] += sum(flatten_self_data[j*virtual_dims[-2]]*flatten_res_grad[k*p] for j in range(virtual_dims[-2]))
+                s = 0
+                for j in range(virtual_dims[-2]):
+                    print((j+k)*virtual_dims[-2], ' -- ', k*p)
+                    s += flatten_self_data[j*virtual_dims[-2]]*flatten_res_grad[k*p]
+                flatten_sec_grad[i] += s
+
+            self.grad = Tensor._reshape_flatten(flatten_self_grad, self.dimensions)
+            sec_obj.grad = Tensor._reshape_flatten(flatten_sec_grad, sec_obj.dimensions)
+
+        if self.required_grad:
+            res_obj._backward = _backward
+
+        return res_obj
+
     def __str__(self) -> str:
         '''
         Convert the tensor to string
@@ -442,8 +579,8 @@ class Tensor:
         assert self.dimensions[-1] == sec_obj.dimensions[-1], f'Tensor dimensions don\'t match for multiplication: {self.shape()}, and {sec_obj.shape()}'
 
         mul_on_last = False
-        flatten_self_data: Tensor
-        flatten_sec_data: Tensor
+        flatten_self_data: NestedList
+        flatten_sec_data: NestedList
         def _produce_res() -> Tensor:
             '''
             The function that will return the result of the addition
